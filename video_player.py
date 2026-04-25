@@ -2,11 +2,31 @@ import sys
 import os
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QSlider, QLabel, QFileDialog, QMessageBox
+    QPushButton, QSlider, QLabel, QFileDialog, QMessageBox, QFrame
 )
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QUrl, QTimer, QPoint
+
+
+class ClickableSlider(QSlider):
+    def __init__(self, parent=None):
+        super().__init__(Qt.Horizontal, parent)
+        self.setTracking(True)
+        
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            value = self.minimum() + (self.maximum() - self.minimum()) * event.pos().x() / self.width()
+            self.setValue(int(value))
+            event.accept()
+        super().mousePressEvent(event)
+        
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.LeftButton:
+            value = self.minimum() + (self.maximum() - self.minimum()) * event.pos().x() / self.width()
+            self.setValue(int(value))
+            event.accept()
+        super().mouseMoveEvent(event)
 
 
 class VideoPlayer(QMainWindow):
@@ -20,39 +40,50 @@ class VideoPlayer(QMainWindow):
         self.current_index = -1
         self.is_fullscreen = False
         self.normal_geometry = None
+        self.control_visible = True
+        self.hide_timer = QTimer()
+        self.hide_timer.setSingleShot(True)
+        self.hide_timer.timeout.connect(self.hide_controls)
         
         self.init_ui()
         self.setup_connections()
         
     def init_ui(self):
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
         
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        self.main_layout = QVBoxLayout(self.central_widget)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
         
         self.video_widget = QVideoWidget()
         self.video_widget.setMinimumSize(300, 200)
-        main_layout.addWidget(self.video_widget)
+        self.video_widget.setMouseTracking(True)
+        self.main_layout.addWidget(self.video_widget)
         
-        control_widget = QWidget()
-        control_widget.setMinimumHeight(80)
-        control_layout = QVBoxLayout(control_widget)
+        self.control_widget = QFrame()
+        self.control_widget.setMinimumHeight(80)
+        self.control_widget.setStyleSheet("""
+            QFrame {
+                background-color: rgba(30, 30, 30, 200);
+            }
+        """)
+        
+        control_layout = QVBoxLayout(self.control_widget)
         control_layout.setContentsMargins(10, 5, 10, 10)
         
         progress_layout = QHBoxLayout()
         
         self.time_label = QLabel("00:00:00")
-        self.time_label.setStyleSheet("color: #333; font-size: 12px;")
+        self.time_label.setStyleSheet("color: white; font-size: 12px;")
         progress_layout.addWidget(self.time_label)
         
-        self.progress_slider = QSlider(Qt.Horizontal)
+        self.progress_slider = ClickableSlider()
         self.progress_slider.setEnabled(False)
         self.progress_slider.setStyleSheet("""
             QSlider::groove:horizontal {
                 height: 6px;
-                background: #ddd;
+                background: rgba(255, 255, 255, 30);
                 border-radius: 3px;
             }
             QSlider::handle:horizontal {
@@ -69,7 +100,7 @@ class VideoPlayer(QMainWindow):
         progress_layout.addWidget(self.progress_slider)
         
         self.duration_label = QLabel("00:00:00")
-        self.duration_label.setStyleSheet("color: #333; font-size: 12px;")
+        self.duration_label.setStyleSheet("color: white; font-size: 12px;")
         progress_layout.addWidget(self.duration_label)
         
         control_layout.addLayout(progress_layout)
@@ -184,13 +215,13 @@ class VideoPlayer(QMainWindow):
         buttons_layout.addStretch()
         
         self.current_file_label = QLabel("未选择视频")
-        self.current_file_label.setStyleSheet("color: #666; font-size: 12px;")
+        self.current_file_label.setStyleSheet("color: white; font-size: 12px;")
         self.current_file_label.setMinimumWidth(200)
         buttons_layout.addWidget(self.current_file_label)
         
         control_layout.addLayout(buttons_layout)
         
-        main_layout.addWidget(control_widget)
+        self.main_layout.addWidget(self.control_widget)
         
         self.media_player = QMediaPlayer()
         self.audio_output = QAudioOutput()
@@ -205,12 +236,26 @@ class VideoPlayer(QMainWindow):
         self.next_video_button.clicked.connect(self.play_next_video)
         self.fullscreen_button.clicked.connect(self.toggle_fullscreen)
         
-        self.progress_slider.sliderMoved.connect(self.set_position)
+        self.progress_slider.valueChanged.connect(self.on_slider_value_changed)
+        self.progress_slider.sliderPressed.connect(self.on_slider_pressed)
+        self.progress_slider.sliderReleased.connect(self.on_slider_released)
         
         self.media_player.playbackStateChanged.connect(self.media_state_changed)
         self.media_player.positionChanged.connect(self.position_changed)
         self.media_player.durationChanged.connect(self.duration_changed)
         self.media_player.errorOccurred.connect(self.handle_error)
+        
+    def on_slider_pressed(self):
+        self.media_player.pause()
+        
+    def on_slider_released(self):
+        self.media_player.setPosition(self.progress_slider.value())
+        if self.media_player.playbackState() != QMediaPlayer.StoppedState:
+            self.media_player.play()
+            
+    def on_slider_value_changed(self, value):
+        if self.progress_slider.isSliderDown():
+            self.time_label.setText(self.format_time(value))
         
     def open_file(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -282,12 +327,35 @@ class VideoPlayer(QMainWindow):
                 self.setGeometry(self.normal_geometry)
             self.is_fullscreen = False
             self.fullscreen_button.setText("全屏")
+            self.hide_timer.stop()
+            self.show_controls()
         else:
             self.normal_geometry = self.geometry()
             self.showFullScreen()
             self.is_fullscreen = True
             self.fullscreen_button.setText("退出全屏")
+            self.start_hide_timer()
             
+    def start_hide_timer(self):
+        if self.is_fullscreen:
+            self.hide_timer.start(3000)
+            
+    def show_controls(self):
+        if not self.control_visible:
+            self.control_widget.show()
+            self.control_visible = True
+            
+    def hide_controls(self):
+        if self.is_fullscreen and self.control_visible:
+            self.control_widget.hide()
+            self.control_visible = False
+            
+    def mouseMoveEvent(self, event):
+        if self.is_fullscreen:
+            self.show_controls()
+            self.start_hide_timer()
+        super().mouseMoveEvent(event)
+        
     def set_position(self, position):
         self.media_player.setPosition(position)
         
@@ -298,8 +366,11 @@ class VideoPlayer(QMainWindow):
             self.play_button.setText("播放")
             
     def position_changed(self, position):
-        self.progress_slider.setValue(position)
-        self.time_label.setText(self.format_time(position))
+        if not self.progress_slider.isSliderDown():
+            self.progress_slider.blockSignals(True)
+            self.progress_slider.setValue(position)
+            self.progress_slider.blockSignals(False)
+            self.time_label.setText(self.format_time(position))
         
     def duration_changed(self, duration):
         self.progress_slider.setRange(0, duration)
